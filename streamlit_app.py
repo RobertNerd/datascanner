@@ -1,53 +1,78 @@
 import streamlit as st
-from openai import OpenAI
+import pdfplumber
+import docx
+import pandas as pd
+import re
+import io
 
-# Show title and description.
-st.title("📄 Document question answering")
-st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-)
+st.title("Kenya Forest Service Table Extractor")
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# Allow upload of PDF or DOCX files
+uploaded_file = st.file_uploader("Upload your document (.pdf or .docx)", type=["pdf", "docx"])
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+# Helper function to extract numbers
+def extract_numbers(text):
+    if text:
+        numbers = re.findall(r'\d+', text)
+        return [int(num) for num in numbers]
+    else:
+        return []
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
-    )
+# Function to parse DOCX files
+def parse_docx(file):
+    doc = docx.Document(file)
+    data = []
+    for table in doc.tables:
+        for row in table.rows:
+            row_data = []
+            for cell in row.cells:
+                numbers = extract_numbers(cell.text)
+                row_data.append(numbers)
+            data.append(row_data)
+    return data
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+# Function to parse PDF files
+def parse_pdf(file):
+    data = []
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                for row in table:
+                    row_data = []
+                    for cell in row:
+                        numbers = extract_numbers(cell)
+                        row_data.append(numbers)
+                    data.append(row_data)
+    return data
 
-    if uploaded_file and question:
+if uploaded_file:
+    # Determine file type
+    if uploaded_file.name.endswith('.docx'):
+        data = parse_docx(uploaded_file)
+    elif uploaded_file.name.endswith('.pdf'):
+        file_bytes = io.BytesIO(uploaded_file.read())
+        data = parse_pdf(file_bytes)
+    else:
+        st.error("Unsupported file type.")
+        st.stop()
 
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
+    # Flatten data for display
+    flat_data = []
+    for row in data:
+        flat_row = []
+        for cell in row:
+            flat_row.append(",".join(map(str, cell)))
+        flat_data.append(flat_row)
 
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
-        )
+    # Convert to DataFrame
+    df = pd.DataFrame(flat_data)
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+    st.write("Extracted Table Data:")
+    st.dataframe(df)
+
+    # CSV download button
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download CSV", csv, "extracted_data.csv", "text/csv")
+
+
